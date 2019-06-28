@@ -25,9 +25,8 @@ ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
 ACCESS_TOKEN_SECRET = os.getenv('ACCESS_TOKEN_SECRET')
 DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
+CLOUD_SQL_CONN_NAME = os.getenv('DB_CONN')
 DB_NAME = 'sentiment'
-CLOUD_SQL_CONN_NAME = \
-    'firestore-playground-243723:us-central1:sentiment-analysis-demo'
 
 SENTIMENT_HAPPIEST = 'happiest'
 SENTIMENT_HAPPIER = 'happier'
@@ -103,6 +102,16 @@ class Tweet(Base):
 
         return SENTIMENT_HAPPIEST
 
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'date': self.date,
+            'text': self.text,
+            'url': self.url,
+            'magnitude': self.magnitude,
+            'score': self.score,
+        }
+
 
 # Create tables if they don't exist.
 Base.metadata.create_all(db)
@@ -117,39 +126,35 @@ def index():
 
 @app.route('/analyze', methods=['POST'])
 def analyze_tweet():
+    try:
+        _analyze_tweet()
+    except Exception as e:
+        log.error(e)
+    return redirect('/')
+
+
+def _analyze_tweet():
     # Pull tweet id from url.
     tweet_url = request.form.get('tweet')
-    try:
-        tweet_id = _get_tweet_id(tweet_url)
-    except Exception as e:
-        log.error(e)
-        return redirect('/')
+    tweet_id = _get_tweet_id(tweet_url)
 
     # Fetch the tweet content.
-    try:
-        tweet = twitter_api.get_status(tweet_id, tweet_mode='extended')
-    except Exception as e:
-        log.error(e)
-        return redirect('/')
+    tweet = twitter_api.get_status(tweet_id, tweet_mode='extended')
 
     # Analyze the tweet content's sentiment.
-    try:
-        sentiment = _get_sentiment(tweet)
-    except Exception as e:
-        log.error(e)
-        return redirect('/')
+    sentiment = _get_sentiment(tweet)
 
     # Write the result to Cloud SQL.
-    session = Session()
-    session.add(Tweet(
+    result = Tweet(
         text=tweet.full_text,
         url=tweet_url,
         magnitude=sentiment.magnitude,
         score=sentiment.score
-    ))
+    )
+    session = Session()
+    session.add(result)
     session.commit()
-
-    return redirect('/')
+    return result
 
 
 def _get_tweet_id(tweet_url):
@@ -176,6 +181,19 @@ def _get_sentiment(tweet):
     )
     return language_client.analyze_sentiment(
         document=document).document_sentiment
+
+
+def gcf_entrypoint(req):
+    """Wrapper for Google Cloud Functions entrypoint."""
+
+    if req.path == '/analyze':
+        try:
+            result = _analyze_tweet()
+            return jsonify(result.to_dict())
+        except Exception as e:
+            log.error(e)
+            return str(e), 500
+    return 'Not Found', 404
 
 
 if __name__ == '__main__':
