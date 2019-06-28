@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+{% autoescape true %}
+<html>
+  <head>
+    <title>Twitter Sentiment Analysis on Cloud Run</title>
+    <link rel="shortcut icon" type="image/ico" href="/static/favicon.ico">
+    <link type="text/css" rel="stylesheet" href="/static/bootstrap/css/bootstrap.css">
+    <link type="text/css" rel="stylesheet" href="/static/bootstrap/css/bootstrap-responsive.css">
+    <link href="//netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css" rel="stylesheet">
+    <style type="text/css">
+      body {
+        padding-top: 40px;
+        padding-bottom: 40px;
+        background-color: #f5f5f5;
+      }
+      blockquote {
+        margin-bottom: 10px;
+        border-left-color: #bbb;
+      }
+      form {
+        margin-top: 10px;
+      }
+      .row {
+        margin-left: 0px;
+        margin-top: 10px;
+        overflow: scroll;
+      }
+      span.glyphicon-link {
+        font-size: 1.2em;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="navbar navbar-inverse navbar-fixed-top">
+      <div class="navbar-inner">
+        <div class="container">
+          <button type="button" class="btn btn-navbar" data-toggle="collapse" data-target=".nav-collapse">
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+            <span class="icon-bar"></span>
+          </button>
+          <a class="brand" href="#">Twitter Sentiment Analysis on Cloud Run</a>
+        </div>
+      </div>
+    </div>
+    <div class="container">
+        <div class="row">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th scope="col">Analyzed</th>
+                        <th scope="col">Content</th>
+                        <th scope="col">Sentiment</th>
+                        <th scope="col">Score</th>
+                        <th scope="col">Magnitude</th>
+                        <th scope="col"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for tweet in tweets %}
+                    <tr>
+                        <td>{{ tweet.date }}</td>
+                        <td>{{ tweet.text }}</td>
+                        <td>
+                            <img
+                               src="/static/img/sentiments/{{ tweet.translate_sentiment() }}.png"
+                               alt="{{ tweet.translate_sentiment() }}">
+                        </td>
+                        <td>{{ tweet.score }}</td>
+                        <td>{{ tweet.magnitude }}</td>
+                        <td>
+                            <a href="{{ tweet.url }}" target="_blank">
+                                <span class="glyphicon glyphicon-link" aria-hidden="true"></span>
+                            </a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+      <form action="/analyze" method="post">
+        <div><input type="text" name="tweet"
+            placeholder="https://twitter.com/tyler_treat/status/1137426985817399297"
+            class="input-block-level"></div>
+        <div><input type="submit" class="btn btn-large btn-primary" value="Analyze"></div>
+      </form>
+
+    </div>
+  </body>
+</html>
+{% endautoescape %}
