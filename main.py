@@ -25,8 +25,8 @@ ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
 ACCESS_TOKEN_SECRET = os.getenv('ACCESS_TOKEN_SECRET')
 DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
-CLOUD_SQL_CONN_NAME = os.getenv('DB_CONN')
-DB_NAME = 'sentiment'
+DB_NAME = os.getenv('DB_NAME', 'sentiment')
+DB_CONN_NAME = os.getenv('DB_CONN')
 
 SENTIMENT_HAPPIEST = 'happiest'
 SENTIMENT_HAPPIER = 'happier'
@@ -46,7 +46,7 @@ app = Flask(__name__)
 query = {'charset': 'utf8mb4'}
 if ENV == 'PROD':
     # Cloud SQL Proxy uses a special Unix socket.
-    query['unix_socket'] = '/cloudsql/{}'.format(CLOUD_SQL_CONN_NAME)
+    query['unix_socket'] = '/cloudsql/{}'.format(DB_CONN_NAME)
 
 ## Connect to Cloud SQL.
 db = sqlalchemy.create_engine(
@@ -119,9 +119,11 @@ Base.metadata.create_all(db)
 
 @app.route('/')
 def index():
-    session = Session()
-    tweets = session.query(Tweet).order_by(Tweet.date.desc()).limit(10)
-    return render_template('index.html', tweets=tweets)
+    try:
+        return render_template('index.html', tweets=_get_tweets())
+    except Exception as e:
+        log.error(e)
+        return str(e), 500
 
 
 @app.route('/analyze', methods=['POST'])
@@ -131,6 +133,11 @@ def analyze_tweet():
     except Exception as e:
         log.error(e)
     return redirect('/')
+
+
+def _get_tweets():
+    session = Session()
+    return session.query(Tweet).order_by(Tweet.date.desc()).limit(10)
 
 
 def _analyze_tweet():
@@ -186,13 +193,20 @@ def _get_sentiment(tweet):
 def gcf_entrypoint(req):
     """Wrapper for Google Cloud Functions entrypoint."""
 
-    if req.path == '/analyze':
+    if req.path == '/':
         try:
-            result = _analyze_tweet()
-            return jsonify(result.to_dict())
+            return jsonify([tweet.to_dict() for tweet in _get_tweets()])
         except Exception as e:
             log.error(e)
             return str(e), 500
+
+    if req.path == '/analyze':
+        try:
+            return jsonify(_analyze_tweet().to_dict())
+        except Exception as e:
+            log.error(e)
+            return str(e), 500
+
     return 'Not Found', 404
 
 
