@@ -8,13 +8,11 @@ from flask import jsonify
 from flask import redirect
 from flask import render_template
 from flask import request
+from google.cloud import firestore
 from google.cloud import language
 from google.cloud.language import enums
 from google.cloud.language import types
-import sqlalchemy
-from sqlalchemy import Column, Integer, String, Float, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+
 import tweepy
 
 
@@ -23,10 +21,6 @@ CONSUMER_KEY = os.getenv('CONSUMER_KEY')
 CONSUMER_SECRET = os.getenv('CONSUMER_SECRET')
 ACCESS_TOKEN = os.getenv('ACCESS_TOKEN')
 ACCESS_TOKEN_SECRET = os.getenv('ACCESS_TOKEN_SECRET')
-DB_USER = os.getenv('DB_USER')
-DB_PASSWORD = os.getenv('DB_PASSWORD')
-DB_NAME = os.getenv('DB_NAME', 'sentiment')
-DB_CONN_NAME = os.getenv('DB_CONN')
 
 SENTIMENT_HAPPIEST = 'happiest'
 SENTIMENT_HAPPIER = 'happier'
@@ -43,78 +37,40 @@ twitter_api = tweepy.API(auth)
 language_client = language.LanguageServiceClient()
 app = Flask(__name__)
 
-query = {'charset': 'utf8mb4'}
-if ENV == 'PROD':
-    # Cloud SQL Proxy uses a special Unix socket.
-    query['unix_socket'] = '/cloudsql/{}'.format(DB_CONN_NAME)
 
-## Connect to Cloud SQL.
-db = sqlalchemy.create_engine(
-    sqlalchemy.engine.url.URL(
-        drivername='mysql+pymysql',
-        username=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME,
-        query=query
-    ),
-)
-Base = declarative_base()
-Session = sessionmaker(bind=db)
+db = firestore.Client()
 
 
-class Tweet(Base):
-    __tablename__ = 'tweets'
-    id = Column(Integer, primary_key=True)
-    date = Column(DateTime, default=datetime.datetime.now, index=True)
-    text = Column(String(300))
-    url = Column(String(1024))
-    magnitude = Column(Float)
-    score = Column(Float)
+def calibrated_score(score, magnitude):
+    calibrated = abs(score) + (0.08 * magnitude)
+    if score < 0:
+        calibrated = calibrated * -1
+    return calibrated
 
-    def calibrated_score(self):
-        score = abs(self.score) + (0.08 * self.magnitude)
-        if self.score < 0:
-            score = score * -1
-        return score
+def translate_sentiment(score, magnitude):
+    score = calibrated_score(score, magnitude)
 
-    def translate_sentiment(self):
-        score = self.calibrated_score()
+    # Sentiment is on a scale from -1.0 (very bad) to 1.0 (very good).
+    # -0.25 to 0.25 is approximately neutral.
+    if -0.25 <= score <= 0.25:
+        return SENTIMENT_NEUTRAL
 
-        # Sentiment is on a scale from -1.0 (very bad) to 1.0 (very good).
-        # -0.25 to 0.25 is approximately neutral.
-        if -0.25 <= score <= 0.25:
-            return SENTIMENT_NEUTRAL
+    if -0.45 < score < -0.25:
+        return SENTIMENT_UNHAPPY
 
-        if -0.45 < score < -0.25:
-            return SENTIMENT_UNHAPPY
+    if -0.75 < score <= -0.45:
+        return SENTIMENT_UNHAPPIER
 
-        if -0.75 < score <= -0.45:
-            return SENTIMENT_UNHAPPIER
+    if score <= -0.75:
+        return SENTIMENT_UNHAPPIEST
 
-        if score <= -0.75:
-            return SENTIMENT_UNHAPPIEST
+    if 0.45 > score > 0.25:
+        return SENTIMENT_HAPPY
 
-        if 0.45 > score > 0.25:
-            return SENTIMENT_HAPPY
+    if 0.75 > score >= 0.45:
+        return SENTIMENT_HAPPIER
 
-        if 0.75 > score >= 0.45:
-            return SENTIMENT_HAPPIER
-
-        return SENTIMENT_HAPPIEST
-
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'date': self.date,
-            'text': self.text,
-            'url': self.url,
-            'magnitude': self.magnitude,
-            'score': self.score,
-        }
-
-
-# Create tables if they don't exist.
-Base.metadata.create_all(db)
+    return SENTIMENT_HAPPIEST
 
 
 @app.route('/')
@@ -136,8 +92,19 @@ def analyze_tweet():
 
 
 def _get_tweets():
-    session = Session()
-    return session.query(Tweet).order_by(Tweet.date.desc()).limit(10)
+    # Then query for documents
+    tweets_ref = db.collection(u'tweets')
+    tweet_docs = tweets_ref.get()
+
+    tweets = []
+    for tweet in tweet_docs:
+        tweet_ = tweet.to_dict()
+        tweet_["sentiment"] = translate_sentiment(
+            tweet_["score"], tweet_["magnitude"])
+
+        tweets.append(tweet_)
+
+    return tweets
 
 
 def _analyze_tweet():
@@ -151,17 +118,18 @@ def _analyze_tweet():
     # Analyze the tweet content's sentiment.
     sentiment = _get_sentiment(tweet)
 
-    # Write the result to Cloud SQL.
-    result = Tweet(
-        text=tweet.full_text,
-        url=tweet_url,
-        magnitude=sentiment.magnitude,
-        score=sentiment.score
-    )
-    session = Session()
-    session.add(result)
-    session.commit()
-    return result
+    tweet_doc = {
+        u'tweet_id': tweet_id,
+        u'text': tweet.full_text,
+        u'date': firestore.SERVER_TIMESTAMP,
+        u'url': tweet_url,
+        u'magnitude': sentiment.magnitude,
+        u'score': sentiment.score
+    }
+
+    doc_ref = db.collection(u'tweets').add(tweet_doc)
+
+    return tweet_doc
 
 
 def _get_tweet_id(tweet_url):
@@ -190,24 +158,6 @@ def _get_sentiment(tweet):
         document=document).document_sentiment
 
 
-def gcf_entrypoint(req):
-    """Wrapper for Google Cloud Functions entrypoint."""
-
-    if req.path == '/':
-        try:
-            return jsonify([tweet.to_dict() for tweet in _get_tweets()])
-        except Exception as e:
-            log.error(e)
-            return str(e), 500
-
-    if req.path == '/analyze':
-        try:
-            return jsonify(_analyze_tweet().to_dict())
-        except Exception as e:
-            log.error(e)
-            return str(e), 500
-
-    return 'Not Found', 404
 
 
 if __name__ == '__main__':
